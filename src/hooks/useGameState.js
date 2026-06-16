@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useLayoutEffect, useRef, useCallback } from "react";
 import { 
   listenToRoom, 
   submitLetter, 
@@ -150,7 +150,7 @@ export const useGameState = (roomId, playerId, playerName, isMultiplayer = false
   const evaluateRoundSubmissions = useCallback((currentRoom, dict) => {
     const finalPlayers = {};
     const roundIdx = currentRoom.currentRound - 1;
-    Object.keys(currentRoom.players).forEach(pId => {
+    Object.keys(currentRoom?.players || {}).forEach(pId => {
       const p = currentRoom.players[pId];
       const word = p.currentSubmission || "";
       const isValid = validateWord(word, currentRoom.letters, dict);
@@ -205,7 +205,7 @@ export const useGameState = (roomId, playerId, playerName, isMultiplayer = false
         // Conundrum timeout
         if (isMultiplayer) {
           if (currentRoom.hostId === playerId) {
-            const finalPlayers = { ...currentRoom.players };
+            const finalPlayers = { ...(currentRoom?.players || {}) };
             Object.keys(finalPlayers).forEach(pId => {
               const p = finalPlayers[pId];
               const scores = [...p.roundScores];
@@ -248,17 +248,28 @@ export const useGameState = (roomId, playerId, playerName, isMultiplayer = false
     }
   }, [roomId, playerId, isMultiplayer, evaluateRoundSubmissions]);
 
+  // Keep track of the current roomId synchronously to protect against StrictMode cleanup deleting active rooms
+  const currentRoomIdRef = useRef(roomId);
+  useLayoutEffect(() => {
+    currentRoomIdRef.current = roomId;
+  }, [roomId]);
+
   // 1. Initial State Setup
   useEffect(() => {
     if (isMultiplayer && isFirebaseConnected()) {
       const unsubscribe = listenToRoom(roomId, (roomData) => {
         if (roomData) {
-          setRoom(roomData);
+          setRoom({
+            ...roomData,
+            letters: roomData.letters || []
+          });
         }
       });
       return () => {
         unsubscribe();
-        leaveRoom(roomId, playerId);
+        if (currentRoomIdRef.current !== roomId || !isMultiplayer) {
+          leaveRoom(roomId, playerId);
+        }
       };
     }
   }, [roomId, playerId, isMultiplayer]);
@@ -293,28 +304,32 @@ export const useGameState = (roomId, playerId, playerName, isMultiplayer = false
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [room?.timerStart, room?.timerDuration, room?.status, handleTimeout]);
 
-  // 4. Local practice bot actions (Letter Selection & Word Submissions)
+  // 4. Bot actions (Letter Selection & Word Submissions)
   useEffect(() => {
-    if (isMultiplayer || !room) return;
+    if (!room) return;
+
+    // Resolve bot ID in the room players list
+    const botId = room?.players ? Object.keys(room.players).find(id => id.startsWith("bot")) : null;
+    const hasBot = !!botId;
+    const isHost = room.hostId === playerId;
+    const shouldRunBot = !isMultiplayer || (hasBot && isHost);
+
+    if (!shouldRunBot || !botId) return;
 
     if (botTimerRef.current) clearTimeout(botTimerRef.current);
-    if (botSelectionIntervalRef.current) clearInterval(botSelectionIntervalRef.current);
+    if (botSelectionIntervalRef.current) clearTimeout(botSelectionIntervalRef.current);
 
-    if (room.status === "selecting" && room.picker === "bot") {
-      const pickNextLetter = () => {
+    const activeDifficulty = room.botDifficulty || botDifficulty;
+    const botName = room?.players?.[botId]?.name || "AI Bot";
+
+    // Helper functions for bot database/state writes
+    const botSubmitLetter = (letter) => {
+      if (isMultiplayer) {
+        submitLetter(roomId, letter);
+      } else {
         setRoom(prev => {
-          if (prev.letters.length >= 9 || prev.status !== "selecting") {
-            clearInterval(botSelectionIntervalRef.current);
-            return prev;
-          }
-
-          const isVowel = Math.random() > 0.45;
-          const letter = getRandomLetter(isVowel);
-          playSound("select_letter");
-          
           const newLetters = [...prev.letters, letter];
           const newRoom = { ...prev, letters: newLetters };
-
           if (newLetters.length === 9) {
             newRoom.multipliers = generateMultipliers();
             newRoom.status = "playing";
@@ -323,86 +338,120 @@ export const useGameState = (roomId, playerId, playerName, isMultiplayer = false
           }
           return newRoom;
         });
-      };
+      }
+    };
 
-      botSelectionIntervalRef.current = setInterval(pickNextLetter, 1200);
-    }
+    const botSubmitWord = (word) => {
+      if (isMultiplayer) {
+        submitWord(roomId, botId, word);
+      } else {
+        setRoom(prev => ({
+          ...prev,
+          players: {
+            ...prev.players,
+            [botId]: {
+              ...prev.players[botId],
+              currentSubmission: word
+            }
+          }
+        }));
+      }
+    };
 
-    if (room.status === "playing" && room.currentRound < 5) {
-      const thinkTime = 5000 + Math.random() * 10000;
-      
-      botTimerRef.current = setTimeout(() => {
-        const currentRoom = localStateRef.current;
-        if (!currentRoom || currentRoom.status !== "playing") return;
-        const botWord = getBotWord(currentRoom.letters, botDifficulty);
-        
+    const botSolveConundrum = () => {
+      if (isMultiplayer) {
+        solveConundrumGame(roomId, botId, botName, 11);
+      } else {
         setRoom(prev => {
-          if (prev.status !== "playing") return prev;
+          const botPlayer = prev.players[botId];
+          const updatedScores = [...botPlayer.roundScores];
+          updatedScores[4] = 11;
+          const updatedWords = [...botPlayer.roundWords];
+          updatedWords[4] = prev.conundrumWord;
+
           return {
             ...prev,
+            status: "game_over",
+            conundrumSolvedBy: botId,
+            conundrumSolvedByName: botPlayer.name,
             players: {
               ...prev.players,
-              bot: {
-                ...prev.players.bot,
-                currentSubmission: botWord
+              [botId]: {
+                ...botPlayer,
+                score: botPlayer.score + 11,
+                roundScores: updatedScores,
+                roundWords: updatedWords
               }
             }
           };
         });
+      }
+    };
+
+    // Phase: Letter Selection
+    if (room.status === "selecting" && room.picker === botId) {
+      const scheduleNextPick = () => {
+        const delay = 800 + Math.random() * 800; // varying human-like typing delay
+        botSelectionIntervalRef.current = setTimeout(() => {
+          const currentRoom = localStateRef.current;
+          if (!currentRoom || currentRoom.letters.length >= 9 || currentRoom.status !== "selecting") {
+            return;
+          }
+          const isVowel = Math.random() > 0.45;
+          const letter = getRandomLetter(isVowel);
+          playSound("select_letter");
+          botSubmitLetter(letter);
+          scheduleNextPick();
+        }, delay);
+      };
+      scheduleNextPick();
+    }
+
+    // Phase: Standard Round Playing (Rounds 1-4)
+    if (room.status === "playing" && room.currentRound < 5) {
+      const thinkTime = 4000 + Math.random() * 8000; // 4 to 12 seconds
+      
+      botTimerRef.current = setTimeout(() => {
+        const currentRoom = localStateRef.current;
+        if (!currentRoom || currentRoom.status !== "playing") return;
+
+        // Ensure bot hasn't already submitted
+        const botPlayer = currentRoom.players[botId];
+        if (botPlayer && botPlayer.currentSubmission) return;
+
+        const botWord = getBotWord(currentRoom.letters, activeDifficulty);
+        botSubmitWord(botWord);
       }, thinkTime);
     }
 
+    // Phase: Conundrum Round Playing (Round 5)
     if (room.status === "playing" && room.currentRound === 5) {
       let solveChance = 0.9;
       let solveDelay = 8000 + Math.random() * 10000;
       
-      if (botDifficulty === "easy") {
+      if (activeDifficulty === "easy") {
         solveChance = 0.3;
         solveDelay = 30000 + Math.random() * 10000;
-      } else if (botDifficulty === "medium") {
+      } else if (activeDifficulty === "medium") {
         solveChance = 0.6;
         solveDelay = 15000 + Math.random() * 15000;
       }
 
       if (Math.random() < solveChance) {
         botTimerRef.current = setTimeout(() => {
-          setRoom(prev => {
-            if (prev.status !== "playing" || prev.conundrumSolvedBy) return prev;
-            
-            playSound("fail");
-            
-            const botPlayer = prev.players.bot;
-            const updatedScores = [...botPlayer.roundScores];
-            updatedScores[4] = 11;
-            const updatedWords = [...botPlayer.roundWords];
-            updatedWords[4] = prev.conundrumWord;
-
-            return {
-              ...prev,
-              status: "game_over",
-              conundrumSolvedBy: "bot",
-              conundrumSolvedByName: "Spellweaver AI",
-              players: {
-                ...prev.players,
-                bot: {
-                  ...botPlayer,
-                  score: botPlayer.score + 11,
-                  roundScores: updatedScores,
-                  roundWords: updatedWords
-                }
-              }
-            };
-          });
+          const currentRoom = localStateRef.current;
+          if (!currentRoom || currentRoom.status !== "playing" || currentRoom.conundrumSolvedBy) return;
+          
+          playSound("fail");
+          botSolveConundrum();
         }, solveDelay);
       }
     }
 
     return () => {
       if (botTimerRef.current) clearTimeout(botTimerRef.current);
-      if (botSelectionIntervalRef.current) clearInterval(botSelectionIntervalRef.current);
+      if (botSelectionIntervalRef.current) clearTimeout(botSelectionIntervalRef.current);
     };
-    // C3 fix: depend on specific room properties, not the whole object.
-    // Bot reads current room via localStateRef to avoid stale closures.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [room?.status, room?.picker, room?.currentRound, room?.conundrumSolvedBy,
       isMultiplayer, botDifficulty]);
@@ -534,15 +583,15 @@ export const useGameState = (roomId, playerId, playerName, isMultiplayer = false
 
     const nextRound = room.currentRound + 1;
     let nextPickerId = room.hostId;
-    let nextPickerName = room.players[room.hostId]?.name || "Player 1";
+    let nextPickerName = room?.players?.[room.hostId]?.name || "Player 1";
 
     if (isMultiplayer) {
-      const playerIds = Object.keys(room.players);
+      const playerIds = room?.players ? Object.keys(room.players) : [];
       const hostIndex = playerIds.indexOf(room.hostId);
       const otherIndex = hostIndex === 0 ? 1 : 0;
       
       const otherId = playerIds[otherIndex];
-      const otherName = room.players[otherId]?.name;
+      const otherName = room?.players?.[otherId]?.name;
 
       if (nextRound % 2 === 0) {
         nextPickerId = otherId;
@@ -559,9 +608,9 @@ export const useGameState = (roomId, playerId, playerName, isMultiplayer = false
 
       const conundrumWord = nextRound === 5 ? CONUNDRUMS[Math.floor(Math.random() * CONUNDRUMS.length)] : "";
       const updatedPlayers = {};
-      Object.keys(room.players).forEach(pId => {
+      Object.keys(room?.players || {}).forEach(pId => {
         updatedPlayers[pId] = {
-          ...room.players[pId],
+          ...(room.players?.[pId] || {}),
           currentSubmission: ""
         };
       });

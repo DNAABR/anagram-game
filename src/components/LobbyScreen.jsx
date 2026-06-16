@@ -1,12 +1,10 @@
-// H2: Extracted LobbyScreen from App.jsx monolith
+// LobbyScreen component for Anagram Magic
 
-import { Users, ArrowRight, User, Sliders } from "lucide-react";
-import { playSound } from "../utils/audio";
+import { Users, ArrowRight, User } from "lucide-react";
 
 export default function LobbyScreen({
-  playerName, savePlayerName, botDifficulty, setBotDifficulty,
-  startPracticeGame, handleCreateOnlineRoom, handleJoinOnlineRoom,
-  roomId, setRoomId
+  playerName, savePlayerName, handleStartMatchmaking,
+  handleCreateOnlineRoom, handleJoinOnlineRoom, roomId, setRoomId
 }) {
   return (
     <div className="w-full max-w-xl flex flex-col items-center">
@@ -24,7 +22,7 @@ export default function LobbyScreen({
       <div className="w-full max-w-md bg-white border-4 border-gray-200 rounded-3xl p-6 shadow-2xl text-left">
         
         {/* Mage Name */}
-        <div className="mb-5">
+        <div className="mb-6">
           <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1.5 flex items-center gap-1.5">
             <User className="w-4 h-4 text-gray-500" /> Enter Player Name
           </label>
@@ -38,48 +36,22 @@ export default function LobbyScreen({
           />
         </div>
 
-        {/* Bot Difficulty Settings */}
-        <div className="mb-5 p-4 rounded-xl bg-gray-50 border-2 border-gray-100">
-          <div className="flex items-center justify-between mb-3">
-            <span className="text-xs font-bold text-gray-500 uppercase tracking-wider flex items-center gap-1.5">
-              <Sliders className="w-4 h-4" /> AI Bot Difficulty
-            </span>
-            <span className="text-xs font-bold px-2 py-0.5 rounded bg-gray-200 text-gray-700 uppercase">
-              {botDifficulty}
-            </span>
-          </div>
-          
-          <div className="flex gap-2">
-            {["easy", "medium", "hard"].map((diff) => (
-              <button
-                key={diff}
-                type="button"
-                onClick={() => { playSound("click"); setBotDifficulty(diff); }}
-                className={`flex-1 py-2 px-3 text-xs font-bold rounded-lg border-2 transition capitalize ${
-                  botDifficulty === diff 
-                    ? "bg-gray-800 border-gray-900 text-white shadow" 
-                    : "bg-white border-gray-200 text-gray-600 hover:border-gray-400"
-                }`}
-              >
-                {diff === "hard" ? "Archmage" : diff}
-              </button>
-            ))}
-          </div>
-        </div>
-
-        {/* Practice Play Action */}
+        {/* Play Matchmaking Action */}
         <button
-          onClick={startPracticeGame}
-          className="w-full btn-miniclip-orange btn-glossy text-white text-md font-black py-4 px-6 rounded-2xl transition tracking-wider uppercase hover:scale-[1.01] active:scale-[0.98] flex items-center justify-center gap-2"
+          onClick={handleStartMatchmaking}
+          className="w-full btn-miniclip-orange btn-glossy text-white text-lg font-black py-5 px-6 rounded-2xl transition tracking-widest uppercase hover:scale-[1.01] active:scale-[0.98] flex items-center justify-center gap-2 shadow-lg mb-2"
         >
-          Play Practice VS. Bot ▶
+          Find Match ⚡
         </button>
+        <p className="text-[10px] text-gray-400 font-bold text-center mb-6 uppercase tracking-wider">
+          Duel active spellcasters online or match with training AI bots
+        </p>
 
         {/* Multiplayer section split */}
         <div className="flex items-center gap-4 my-5">
           <div className="h-[2px] bg-gray-100 flex-1"></div>
           <span className="text-xs font-bold text-gray-400 uppercase tracking-widest flex items-center gap-1.5">
-            <Users className="w-3.5 h-3.5" /> Multiplayer Arena
+            <Users className="w-3.5 h-3.5" /> Play with Friend
           </span>
           <div className="h-[2px] bg-gray-100 flex-1"></div>
         </div>
@@ -90,7 +62,7 @@ export default function LobbyScreen({
             onClick={handleCreateOnlineRoom}
             className="w-full btn-miniclip-grey btn-glossy text-white font-bold py-3.5 px-4 rounded-xl transition flex items-center justify-center gap-2"
           >
-            Create Custom Room
+            Create Private Room
           </button>
 
           <form onSubmit={handleJoinOnlineRoom} className="flex gap-2">
@@ -99,7 +71,7 @@ export default function LobbyScreen({
               value={roomId}
               onChange={(e) => setRoomId(e.target.value.toLowerCase())}
               className="flex-1 bg-gray-50 border-2 border-gray-200 focus:border-gray-400 rounded-xl px-4 py-2 text-sm text-gray-900 font-bold uppercase tracking-wider focus:outline-none transition shadow-inner"
-              placeholder="Room Code (e.g. magic-1234)"
+              placeholder="Enter Room Code"
             />
             <button
               type="submit"

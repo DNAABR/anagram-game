@@ -61,7 +61,7 @@ export const isFirebaseConnected = () => {
 };
 
 // Firebase Realtime DB helper actions
-export const createRoom = async (roomId, hostId, hostName) => {
+export const createRoom = async (roomId, hostId, hostName, isPublic = false) => {
   if (!db) return false;
   
   const roomRef = ref(db, `rooms/${roomId}`);
@@ -92,6 +92,16 @@ export const createRoom = async (roomId, hostId, hostName) => {
   };
 
   await set(roomRef, initialRoom);
+
+  if (isPublic) {
+    const publicRoomRef = ref(db, `public_rooms/${roomId}`);
+    await set(publicRoomRef, {
+      hostId,
+      hostName,
+      timestamp: Date.now()
+    });
+  }
+
   return true;
 };
 
@@ -138,6 +148,10 @@ export const joinRoom = async (roomId, playerId, playerName) => {
     timerStart: Date.now(),
     timerDuration: 15 // letter selection timer
   });
+
+  // Remove from public rooms
+  const publicRoomRef = ref(db, `public_rooms/${roomId}`);
+  await remove(publicRoomRef);
 
   return true;
 };
@@ -291,7 +305,7 @@ export const endConundrumPhaseTimeout = async (roomId, finalPlayersData) => {
 };
 
 export const listenToRoom = (roomId, callback) => {
-  if (!db) return () => {};
+  if (!db || !roomId) return () => {};
   const roomRef = ref(db, `rooms/${roomId}`);
   onValue(roomRef, (snapshot) => {
     callback(snapshot.val());
@@ -301,7 +315,7 @@ export const listenToRoom = (roomId, callback) => {
 };
 
 export const leaveRoom = async (roomId, playerId) => {
-  if (!db) return;
+  if (!db || !roomId) return;
   const roomRef = ref(db, `rooms/${roomId}`);
   const snapshot = await get(roomRef);
   if (!snapshot.exists()) return;
@@ -313,6 +327,8 @@ export const leaveRoom = async (roomId, playerId) => {
   if (playerIds.length <= 1) {
     // If last player leaves, delete room
     await remove(roomRef);
+    // Also remove from public rooms
+    await remove(ref(db, `public_rooms/${roomId}`));
   } else {
     // Remove player
     const updatedPlayers = { ...players };
@@ -330,4 +346,55 @@ export const leaveRoom = async (roomId, playerId) => {
       status: "game_over" // end the game if someone leaves
     });
   }
+};
+
+export const findPublicRoom = async (playerId) => {
+  if (!db) return null;
+  const publicRoomsRef = ref(db, "public_rooms");
+  const snapshot = await get(publicRoomsRef);
+  if (!snapshot.exists()) return null;
+
+  const roomsData = snapshot.val();
+  // Find a room where the host is not the current player
+  const matchingRoomId = Object.keys(roomsData).find(roomId => {
+    return roomsData[roomId].hostId !== playerId;
+  });
+
+  return matchingRoomId || null;
+};
+
+export const joinBotToRoom = async (roomId, botId, botName, botDifficulty) => {
+  if (!db) return false;
+  const roomRef = ref(db, `rooms/${roomId}`);
+  const snapshot = await get(roomRef);
+  if (!snapshot.exists()) return false;
+
+  const roomData = snapshot.val();
+  const players = roomData.players || {};
+
+  const updatedPlayers = {
+    ...players,
+    [botId]: {
+      id: botId,
+      name: botName,
+      score: 0,
+      currentSubmission: "",
+      roundScores: [0, 0, 0, 0, 0],
+      roundWords: ["", "", "", "", ""]
+    }
+  };
+
+  await update(roomRef, {
+    players: updatedPlayers,
+    status: "selecting",
+    botDifficulty,
+    timerStart: Date.now(),
+    timerDuration: 15
+  });
+
+  // Remove from public rooms
+  const publicRoomRef = ref(db, `public_rooms/${roomId}`);
+  await remove(publicRoomRef);
+
+  return true;
 };

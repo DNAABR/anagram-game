@@ -187,12 +187,12 @@ function RoundOverPhase({ room, playerId, nextRound }) {
 
       {/* Compare cards */}
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 w-full mb-6">
-        {Object.keys(room.players).map((pId) => {
-          const p = room.players[pId];
+        {Object.keys(room?.players || {}).map((pId) => {
+          const p = room.players?.[pId] || {};
           const isLocal = pId === playerId;
           const roundIdx = room.currentRound - 1;
-          const score = p.roundScores[roundIdx];
-          const word = p.roundWords[roundIdx] || "-";
+          const score = p.roundScores?.[roundIdx] || 0;
+          const word = p.roundWords?.[roundIdx] || "-";
           const isInvalid = word.startsWith("(");
 
           return (
@@ -239,16 +239,16 @@ function RoundOverPhase({ room, playerId, nextRound }) {
 
 function GameOverScreen({ room, playerId, isMultiplayer, restartLocalGame, handleExitToLobby }) {
   // Compute winner
-  const playerIds = Object.keys(room.players);
+  const playerIds = room?.players ? Object.keys(room.players) : [];
   let winnerName = "No One";
   let highestScore = -1;
   let draw = false;
 
   playerIds.forEach(pId => {
-    const score = room.players[pId].score;
+    const score = room.players?.[pId]?.score || 0;
     if (score > highestScore) {
       highestScore = score;
-      winnerName = room.players[pId].name;
+      winnerName = room.players?.[pId]?.name || "Unknown";
       draw = false;
     } else if (score === highestScore) {
       draw = true;
@@ -273,8 +273,8 @@ function GameOverScreen({ room, playerId, isMultiplayer, restartLocalGame, handl
 
       {/* Scores leaderboard */}
       <div className="w-full flex flex-col gap-2.5 my-3">
-        {Object.keys(room.players).map((pId) => {
-          const p = room.players[pId];
+        {Object.keys(room?.players || {}).map((pId) => {
+          const p = room.players?.[pId] || {};
           return (
             <div 
               key={pId}
@@ -329,42 +329,85 @@ function GameOverScreen({ room, playerId, isMultiplayer, restartLocalGame, handl
   );
 }
 
-function MatchmakingScreen({ roomId, handleCopyCode, handleExitToLobby }) {
-  return (
-    <div className="w-full max-w-md flex flex-col items-center py-6">
-      {/* Pulsing matchmaking card */}
-      <div className="w-32 h-32 rounded-full border-4 border-white/20 animate-spin flex items-center justify-center mb-6">
-        <Users className="w-12 h-12 text-white animate-pulse" />
-      </div>
-
-      <h2 className="text-2xl font-black text-white uppercase tracking-wider text-center">Opening Match Portal</h2>
-      <p className="text-sm text-white/70 text-center mt-2 mb-6">
-        Send this code to your opponent:
-      </p>
-
-      <div className="w-full bg-white border-4 border-gray-200 rounded-3xl p-6 shadow-2xl flex flex-col items-center mb-6">
-        <div className="bg-gray-50 px-5 py-3.5 rounded-xl border-2 border-gray-100 flex items-center justify-between w-full mb-3">
-          <span className="font-black tracking-wider uppercase text-xl text-orange-600">{roomId}</span>
-          <button
-            onClick={handleCopyCode}
-            className="flex items-center gap-1 text-xs text-gray-500 hover:text-gray-900 transition font-bold"
-          >
-            <Copy className="w-4 h-4" /> Copy
-          </button>
+function MatchmakingScreen({ roomId, handleCopyCode, handleExitToLobby, isCustomMatch, matchmakingTimer, matchmakingStatus }) {
+  if (isCustomMatch) {
+    return (
+      <div className="w-full max-w-md flex flex-col items-center py-6">
+        {/* Pulsing matchmaking card */}
+        <div className="w-32 h-32 rounded-full border-4 border-white/20 animate-spin flex items-center justify-center mb-6">
+          <Users className="w-12 h-12 text-white animate-pulse" />
         </div>
-        <p className="text-xs text-gray-400 text-center font-bold">
-          Waiting for rival spellcaster...
-        </p>
-      </div>
 
-      <button
-        onClick={handleExitToLobby}
-        className="text-xs font-bold text-white/80 hover:text-white hover:underline transition uppercase tracking-wider"
-      >
-        Cancel Matchmaking
-      </button>
-    </div>
-  );
+        <h2 className="text-2xl font-black text-white uppercase tracking-wider text-center">Opening Match Portal</h2>
+        <p className="text-sm text-white/70 text-center mt-2 mb-6">
+          Send this code to your opponent:
+        </p>
+
+        <div className="w-full bg-white border-4 border-gray-200 rounded-3xl p-6 shadow-2xl flex flex-col items-center mb-6">
+          <div className="bg-gray-50 px-5 py-3.5 rounded-xl border-2 border-gray-100 flex items-center justify-between w-full mb-3">
+            <span className="font-black tracking-wider uppercase text-xl text-orange-600">{roomId}</span>
+            <button
+              onClick={handleCopyCode}
+              className="flex items-center gap-1 text-xs text-gray-500 hover:text-gray-900 transition font-bold"
+            >
+              <Copy className="w-4 h-4" /> Copy
+            </button>
+          </div>
+          <p className="text-xs text-gray-400 text-center font-bold">
+            Waiting for rival spellcaster...
+          </p>
+        </div>
+
+        <button
+          onClick={handleExitToLobby}
+          className="text-xs font-bold text-white/80 hover:text-white hover:underline transition uppercase tracking-wider"
+        >
+          Cancel Matchmaking
+        </button>
+      </div>
+    );
+  } else {
+    // Public Matchmaking
+    return (
+      <div className="w-full max-w-md flex flex-col items-center py-6">
+        {/* Pulsing magical portal */}
+        <div className="relative w-36 h-36 flex items-center justify-center mb-6">
+          <div className="absolute inset-0 rounded-full border-4 border-dashed border-orange-500 animate-spin" style={{ animationDuration: '6s' }}></div>
+          <div className="absolute inset-2 rounded-full border-4 border-dashed border-indigo-400 animate-spin" style={{ animationDuration: '4s', animationDirection: 'reverse' }}></div>
+          <div className="absolute inset-4 rounded-full bg-black/20 flex items-center justify-center">
+            <Users className="w-12 h-12 text-white animate-pulse" />
+          </div>
+        </div>
+
+        <h2 className="text-2xl font-black text-white uppercase tracking-wider text-center">
+          {matchmakingStatus === "filling" ? "SUMMONING BOT" : "SUMMONING RIVAL"}
+        </h2>
+        <p className="text-sm text-white/70 text-center mt-2 mb-6 px-4">
+          {matchmakingStatus === "filling" 
+            ? "Preparing battle grimoire for training AI..." 
+            : "Searching the matchmaking lobby for other active mages..."}
+        </p>
+
+        <div className="w-full bg-white border-4 border-gray-200 rounded-3xl p-6 shadow-2xl flex flex-col items-center mb-6">
+          <div className="flex flex-col items-center gap-3">
+            <div className="text-4xl font-black text-orange-600 tracking-tighter animate-pulse">
+              {matchmakingTimer}s
+            </div>
+            <p className="text-xs text-gray-400 text-center font-bold uppercase tracking-wider">
+              {matchmakingStatus === "filling" ? "Entering Arena..." : "Looking for real players..."}
+            </p>
+          </div>
+        </div>
+
+        <button
+          onClick={handleExitToLobby}
+          className="text-xs font-bold text-white/80 hover:text-white hover:underline transition uppercase tracking-wider"
+        >
+          Cancel Search
+        </button>
+      </div>
+    );
+  }
 }
 
 // ==================== MAIN GAME BOARD COMPONENT ====================
@@ -375,22 +418,32 @@ export default function GameBoard({
   pickLetter, pickAllLettersRandomly, submitWord, nextRound,
   restartLocalGame, errorMessage, visualShuffleMap,
   handleTileClick, handleShuffleTiles, handleCopyCode,
-  handleExitToLobby, roomId, screen
+  handleExitToLobby, roomId, screen,
+  matchmakingTimer, matchmakingStatus, isCustomMatch
 }) {
   // Calculate stopwatch rotation
   const timerDuration = room?.timerDuration || 30;
   const needleAngle = room ? (timeLeft / timerDuration) * 360 : 360;
 
   if (screen === "matchmaking") {
-    return <MatchmakingScreen roomId={roomId} handleCopyCode={handleCopyCode} handleExitToLobby={handleExitToLobby} />;
+    return (
+      <MatchmakingScreen 
+        roomId={roomId} 
+        handleCopyCode={handleCopyCode} 
+        handleExitToLobby={handleExitToLobby} 
+        isCustomMatch={isCustomMatch}
+        matchmakingTimer={matchmakingTimer}
+        matchmakingStatus={matchmakingStatus}
+      />
+    );
   }
 
   if (!room) return null;
 
   // Get opponent data
-  const opponentId = Object.keys(room.players).find(id => id !== playerId) || "bot";
-  const oppData = room.players[opponentId] || { name: "Spellweaver AI", score: 0, roundScores: [0,0,0,0,0], roundWords: ["","","","",""] };
-  const pData = room.players[playerId] || { name: playerName, score: 0, roundScores: [0,0,0,0,0], roundWords: ["","","","",""] };
+  const opponentId = Object.keys(room?.players || {}).find(id => id !== playerId) || "bot";
+  const oppData = room?.players?.[opponentId] || { name: "Opponent", score: 0, roundScores: [0,0,0,0,0], roundWords: ["","","","",""] };
+  const pData = room?.players?.[playerId] || { name: playerName, score: 0, roundScores: [0,0,0,0,0], roundWords: ["","","","",""] };
 
   return (
     <div className="w-full max-w-4xl flex flex-col gap-6 relative">

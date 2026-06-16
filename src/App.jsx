@@ -1,6 +1,12 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { Volume2, VolumeX } from "lucide-react";
-import { createRoom, joinRoom, isFirebaseConnected } from "./utils/firebase";
+import { 
+  createRoom, 
+  joinRoom, 
+  isFirebaseConnected, 
+  findPublicRoom, 
+  joinBotToRoom 
+} from "./utils/firebase";
 import { loadDictionary } from "./utils/dictionary";
 import { playSound, toggleMute, getMuteStatus } from "./utils/audio";
 import { useGameState } from "./hooks/useGameState";
@@ -26,8 +32,12 @@ function App() {
   const [screen, setScreen] = useState("lobby"); // lobby | matchmaking | game | settings
   const [isMultiplayer, setIsMultiplayer] = useState(false);
   const [roomId, setRoomId] = useState("");
-  const [botDifficulty, setBotDifficulty] = useState("medium"); // easy | medium | hard
   const [isMuted, setIsMuted] = useState(getMuteStatus());
+
+  // Matchmaking State
+  const [matchmakingTimer, setMatchmakingTimer] = useState(8);
+  const [matchmakingStatus, setMatchmakingStatus] = useState("searching"); // searching | matching | filling
+  const [isCustomMatch, setIsCustomMatch] = useState(false);
 
   // Dictionary state
   const [dictionary, setDictionary] = useState(null);
@@ -35,6 +45,9 @@ function App() {
 
   // Custom visual shuffle map for standard rounds
   const [visualShuffleMap, setVisualShuffleMap] = useState(() => Array.from({ length: 9 }, (_, i) => i));
+
+  // Timer reference for matchmaking
+  const matchmakingTimeoutRef = useRef(null);
 
   // Load words dictionary on mount
   useEffect(() => {
@@ -66,8 +79,31 @@ function App() {
     playerName, 
     isMultiplayer, 
     dictionary, 
-    botDifficulty
+    "medium" // Default bot difficulty parameter
   );
+
+  // Synchronized room ref for matchmaking timer ticks to prevent stale closures
+  const roomRef = useRef(room);
+  useEffect(() => {
+    roomRef.current = room;
+  }, [room]);
+
+  // Clear matchmaking countdown if a human joins before the timer runs out
+  useEffect(() => {
+    if (room && room.status !== "waiting") {
+      if (matchmakingTimeoutRef.current) {
+        clearTimeout(matchmakingTimeoutRef.current);
+        matchmakingTimeoutRef.current = null;
+      }
+    }
+  }, [room]);
+
+  // Clean up matchmaking timer on unmount
+  useEffect(() => {
+    return () => {
+      if (matchmakingTimeoutRef.current) clearTimeout(matchmakingTimeoutRef.current);
+    };
+  }, []);
 
   // Confetti trigger — lazy-load canvas-confetti (H10)
   useEffect(() => {
@@ -222,16 +258,81 @@ function App() {
     });
   }, [setActiveIndices]);
 
-  // Action: Launch Bot Practice Room
-  const startPracticeGame = useCallback(() => {
-    playSound("success");
-    setIsMultiplayer(false);
-    const newRoomId = "local_" + Math.floor(1000 + Math.random() * 9000);
-    setRoomId(newRoomId);
-    setScreen("game");
-  }, []);
+  // Action: Launch Public Matchmaking
+  const handleStartMatchmaking = useCallback(async () => {
+    playSound("click");
+    if (!isFirebaseConnected()) {
+      playSound("fail");
+      alert("Firebase Realtime Database is not connected.");
+      return;
+    }
 
-  // Action: Create Online Room
+    setIsMultiplayer(true);
+    setScreen("matchmaking");
+    setMatchmakingStatus("searching");
+    setMatchmakingTimer(8);
+    setIsCustomMatch(false);
+
+    try {
+      // 1. Try to find an open public room
+      const foundRoomId = await findPublicRoom(playerId);
+
+      if (foundRoomId) {
+        setRoomId(foundRoomId);
+        await joinRoom(foundRoomId, playerId, playerName);
+        setScreen("game");
+        playSound("success");
+      } else {
+        // 2. Create a new public room
+        const newRoomId = "magic-" + Math.floor(1000 + Math.random() * 9000);
+        setRoomId(newRoomId);
+        await createRoom(newRoomId, playerId, playerName, true); // true = public room
+
+        // 3. Start countdown to fill with bot if no human player joins
+        let timeLeft = 8;
+        const tick = async () => {
+          if (roomRef.current && roomRef.current.status !== "waiting") {
+            // Match has been found/started with a human!
+            return;
+          }
+
+          timeLeft -= 1;
+          setMatchmakingTimer(timeLeft);
+
+          if (timeLeft <= 0) {
+            setMatchmakingStatus("filling");
+            const difficulties = ["easy", "medium", "hard"];
+            const selectedDiff = difficulties[Math.floor(Math.random() * difficulties.length)];
+            const REAL_NAMES = [
+              "Alex M.", "Emma S.", "Liam K.", "Olivia W.", "Noah B.", 
+              "Ava J.", "Sophia H.", "Jackson T.", "Isabella D.", "Lucas R.", 
+              "Mia C.", "Benjamin L.", "Charlotte G.", "Oliver P.", "Amelia F.", 
+              "James N.", "Harper V.", "Logan E.", "Evelyn Y.", "Alexander Z.", 
+              "Emily A.", "Daniel Q.", "Elizabeth U.", "Henry O.", "Sofia X.", 
+              "Sebastian I.", "Avery W.", "Jack D.", "Chloe M.", "Owen B.",
+              "Grace L.", "Connor K.", "Zoe H.", "Caleb S.", "Lily G.",
+              "Ryan N.", "Hannah C.", "Nathan T.", "Aria J.", "Isaac P."
+            ];
+            const botName = REAL_NAMES[Math.floor(Math.random() * REAL_NAMES.length)];
+            const botId = "bot_" + Math.floor(1000 + Math.random() * 9000);
+
+            await joinBotToRoom(newRoomId, botId, botName, selectedDiff);
+            setScreen("game");
+          } else {
+            matchmakingTimeoutRef.current = setTimeout(tick, 1000);
+          }
+        };
+        matchmakingTimeoutRef.current = setTimeout(tick, 1000);
+      }
+    } catch (err) {
+      playSound("fail");
+      alert(err.message || "Matchmaking failed. Please try again.");
+      setScreen("lobby");
+      setRoomId("");
+    }
+  }, [playerId, playerName]);
+
+  // Action: Create Online Custom Room (Play with Friend)
   const handleCreateOnlineRoom = useCallback(async () => {
     playSound("click");
     if (!isFirebaseConnected()) {
@@ -240,13 +341,14 @@ function App() {
       return;
     }
     setIsMultiplayer(true);
+    setIsCustomMatch(true); // Custom game
     const newRoomId = "magic-" + Math.floor(1000 + Math.random() * 9000);
     setRoomId(newRoomId);
     setScreen("matchmaking");
-    await createRoom(newRoomId, playerId, playerName);
+    await createRoom(newRoomId, playerId, playerName, false); // false = private room
   }, [playerId, playerName]);
 
-  // Action: Join Online Room
+  // Action: Join Online Custom Room (Play with Friend)
   const handleJoinOnlineRoom = useCallback(async (e) => {
     e.preventDefault();
     if (!roomId) return;
@@ -258,6 +360,7 @@ function App() {
     }
 
     setIsMultiplayer(true);
+    setIsCustomMatch(true); // Custom game
     playSound("click");
     try {
       await joinRoom(roomId.trim(), playerId, playerName);
@@ -282,6 +385,10 @@ function App() {
     playSound("remove");
     setScreen("lobby");
     setRoomId("");
+    if (matchmakingTimeoutRef.current) {
+      clearTimeout(matchmakingTimeoutRef.current);
+      matchmakingTimeoutRef.current = null;
+    }
     if (!isMultiplayer) {
       restartLocalGame();
     }
@@ -303,9 +410,7 @@ function App() {
           <LobbyScreen
             playerName={playerName}
             savePlayerName={savePlayerName}
-            botDifficulty={botDifficulty}
-            setBotDifficulty={setBotDifficulty}
-            startPracticeGame={startPracticeGame}
+            handleStartMatchmaking={handleStartMatchmaking}
             handleCreateOnlineRoom={handleCreateOnlineRoom}
             handleJoinOnlineRoom={handleJoinOnlineRoom}
             roomId={roomId}
@@ -338,6 +443,9 @@ function App() {
             handleExitToLobby={handleExitToLobby}
             roomId={roomId}
             screen={screen}
+            matchmakingTimer={matchmakingTimer}
+            matchmakingStatus={matchmakingStatus}
+            isCustomMatch={isCustomMatch}
           />
         )}
 
