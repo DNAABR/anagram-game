@@ -12,7 +12,7 @@ import {
   isFirebaseConnected
 } from "../utils/firebase";
 import { playSound } from "../utils/audio";
-import { validateWord, calculateScore, CONUNDRUMS, scrambleWord } from "../utils/dictionary";
+import { validateWord, calculateScore, CONUNDRUMS, scrambleWord, getDictionaryIndex } from "../utils/dictionary";
 
 // Helper letter banks
 const VOWELS = ["A", "E", "I", "O", "U"];
@@ -26,38 +26,75 @@ const getRandomLetter = (isVowel) => {
   return bank[Math.floor(Math.random() * bank.length)];
 };
 
-// Bot Helper: Finds valid words from dictionary that can be formed from board letters
-const getBotWord = (boardLetters, dictionarySet, difficulty = "medium") => {
-  if (!dictionarySet || dictionarySet.size === 0) return "";
+// Generate random multiplier positions on the board
+const generateMultipliers = () => {
+  const indices = [0, 1, 2, 3, 4, 5, 6, 7, 8];
+  const idx2 = indices.splice(Math.floor(Math.random() * indices.length), 1)[0];
+  const idx3 = indices.splice(Math.floor(Math.random() * indices.length), 1)[0];
+  return { x2: idx2, x3: idx3 };
+};
 
-  const validWords = [];
+// Factory for initial room state to avoid duplication
+const createInitialRoom = (roomId, playerId, playerName) => ({
+  roomId,
+  status: "selecting",
+  currentRound: 1,
+  picker: playerId,
+  pickerName: playerName,
+  letters: [],
+  multipliers: { x2: -1, x3: -1 },
+  timerStart: Date.now(),
+  timerDuration: 15,
+  conundrumWord: "",
+  conundrumSolvedBy: "",
+  conundrumSolvedByName: "",
+  players: {
+    [playerId]: {
+      id: playerId, name: playerName, score: 0,
+      currentSubmission: "", roundScores: [0,0,0,0,0], roundWords: ["","","","",""]
+    },
+    "bot": {
+      id: "bot", name: "Spellweaver AI", score: 0,
+      currentSubmission: "", roundScores: [0,0,0,0,0], roundWords: ["","","","",""]
+    }
+  }
+});
+
+// Bot Helper: Finds valid words using pre-indexed dictionary (by word length)
+const getBotWord = (boardLetters, difficulty = "medium") => {
+  const dictionaryIndex = getDictionaryIndex();
+  if (!dictionaryIndex) return "";
+
   const boardCount = {};
   boardLetters.forEach(l => boardCount[l] = (boardCount[l] || 0) + 1);
 
-  // Filter dictionary for matches
-  for (let word of dictionarySet) {
-    if (word.length < 3 || word.length > 9) continue;
-    
-    // Quick count validation
-    const wordCount = {};
-    let ok = true;
-    for (let char of word) {
-      wordCount[char] = (wordCount[char] || 0) + 1;
-      if (!boardCount[char] || wordCount[char] > boardCount[char]) {
-        ok = false;
-        break;
+  const validWords = [];
+
+  // Iterate longest-first so hard mode can exit early
+  for (let len = 9; len >= 3; len--) {
+    const candidates = dictionaryIndex[len];
+    if (!candidates) continue;
+
+    for (const word of candidates) {
+      const wordCount = {};
+      let ok = true;
+      for (const char of word) {
+        wordCount[char] = (wordCount[char] || 0) + 1;
+        if (!boardCount[char] || wordCount[char] > boardCount[char]) {
+          ok = false;
+          break;
+        }
       }
+      if (ok) validWords.push(word);
     }
-    if (ok) {
-      validWords.push(word);
-    }
+
+    // Hard mode: stop as soon as we have the longest words
+    if (difficulty === "hard" && validWords.length > 0) break;
   }
 
   if (validWords.length === 0) return "";
 
-  // Sort by length descending
-  validWords.sort((a, b) => b.length - a.length);
-
+  // Already ordered longest-first, pick from appropriate pool
   let pool;
   if (difficulty === "easy") {
     pool = validWords.filter(w => w.length <= 5);
@@ -72,43 +109,9 @@ const getBotWord = (boardLetters, dictionarySet, difficulty = "medium") => {
 };
 
 export const useGameState = (roomId, playerId, playerName, isMultiplayer = false, dictionary = null, botDifficulty = "medium") => {
-  // Functional initial state setup to avoid cascading render lint errors
   const [room, setRoom] = useState(() => {
-    if (isMultiplayer && isFirebaseConnected()) {
-      return null;
-    }
-    return {
-      roomId,
-      status: "selecting", // selecting | playing | round_over | game_over
-      currentRound: 1,
-      picker: playerId,
-      pickerName: playerName,
-      letters: [],
-      multipliers: { x2: -1, x3: -1 },
-      timerStart: Date.now(),
-      timerDuration: 15,
-      conundrumWord: "",
-      conundrumSolvedBy: "",
-      conundrumSolvedByName: "",
-      players: {
-        [playerId]: {
-          id: playerId,
-          name: playerName,
-          score: 0,
-          currentSubmission: "",
-          roundScores: [0, 0, 0, 0, 0],
-          roundWords: ["", "", "", "", ""]
-        },
-        "bot": {
-          id: "bot",
-          name: "Spellweaver AI",
-          score: 0,
-          currentSubmission: "",
-          roundScores: [0, 0, 0, 0, 0],
-          roundWords: ["", "", "", "", ""]
-        }
-      }
-    };
+    if (isMultiplayer && isFirebaseConnected()) return null;
+    return createInitialRoom(roomId, playerId, playerName);
   });
 
   const [timeLeft, setTimeLeft] = useState(0);
@@ -122,18 +125,49 @@ export const useGameState = (roomId, playerId, playerName, isMultiplayer = false
   const botTimerRef = useRef(null);
   const botSelectionIntervalRef = useRef(null);
   const localStateRef = useRef(null);
+  const dictionaryRef = useRef(dictionary);
+  const errorTimerRef = useRef(null);
 
-  // Sync state reference for async operations
+  // Sync state references for async operations
   useEffect(() => {
     localStateRef.current = room;
   }, [room]);
+  useEffect(() => {
+    dictionaryRef.current = dictionary;
+  }, [dictionary]);
+
+  // Clean up error timer on unmount
+  useEffect(() => {
+    return () => {
+      if (errorTimerRef.current) clearTimeout(errorTimerRef.current);
+    };
+  }, []);
 
   // Derived picker state to avoid synchronous state triggers
   const isPicker = room?.picker === playerId;
 
+  // M7: Shared helper to evaluate all players' round submissions
+  const evaluateRoundSubmissions = useCallback((currentRoom, dict) => {
+    const finalPlayers = {};
+    const roundIdx = currentRoom.currentRound - 1;
+    Object.keys(currentRoom.players).forEach(pId => {
+      const p = currentRoom.players[pId];
+      const word = p.currentSubmission || "";
+      const isValid = validateWord(word, currentRoom.letters, dict);
+      const scoreGained = isValid ? calculateScore(word, currentRoom.letters, currentRoom.multipliers) : 0;
+      const scores = [...p.roundScores];
+      scores[roundIdx] = scoreGained;
+      const words = [...p.roundWords];
+      words[roundIdx] = isValid ? word : (word ? `(${word})` : "");
+      finalPlayers[pId] = { ...p, score: p.score + scoreGained, roundScores: scores, roundWords: words };
+    });
+    return finalPlayers;
+  }, []);
+
   // Handle phase timeouts
   const handleTimeout = useCallback(() => {
     const currentRoom = localStateRef.current;
+    const dict = dictionaryRef.current;
     if (!currentRoom) return;
 
     if (currentRoom.status === "selecting") {
@@ -145,10 +179,7 @@ export const useGameState = (roomId, playerId, playerName, isMultiplayer = false
             const isVowel = Math.random() > 0.45;
             lettersPool.push(getRandomLetter(isVowel));
           }
-          const indices = [0, 1, 2, 3, 4, 5, 6, 7, 8];
-          const idx2 = indices.splice(Math.floor(Math.random() * indices.length), 1)[0];
-          const idx3 = indices.splice(Math.floor(Math.random() * indices.length), 1)[0];
-          submitAllLetters(roomId, lettersPool, { x2: idx2, x3: idx3 });
+          submitAllLetters(roomId, lettersPool, generateMultipliers());
         }
       } else {
         // Local autocomplete
@@ -159,13 +190,10 @@ export const useGameState = (roomId, playerId, playerName, isMultiplayer = false
             const isVowel = Math.random() > 0.45;
             lettersPool.push(getRandomLetter(isVowel));
           }
-          const indices = [0, 1, 2, 3, 4, 5, 6, 7, 8];
-          const idx2 = indices.splice(Math.floor(Math.random() * indices.length), 1)[0];
-          const idx3 = indices.splice(Math.floor(Math.random() * indices.length), 1)[0];
           return {
             ...prev,
             letters: lettersPool,
-            multipliers: { x2: idx2, x3: idx3 },
+            multipliers: generateMultipliers(),
             status: "playing",
             timerStart: Date.now(),
             timerDuration: 30
@@ -177,7 +205,6 @@ export const useGameState = (roomId, playerId, playerName, isMultiplayer = false
         // Conundrum timeout
         if (isMultiplayer) {
           if (currentRoom.hostId === playerId) {
-            // Host handles conundrum end
             const finalPlayers = { ...currentRoom.players };
             Object.keys(finalPlayers).forEach(pId => {
               const p = finalPlayers[pId];
@@ -185,11 +212,7 @@ export const useGameState = (roomId, playerId, playerName, isMultiplayer = false
               scores[4] = 0;
               const words = [...p.roundWords];
               words[4] = "";
-              finalPlayers[pId] = {
-                ...p,
-                roundScores: scores,
-                roundWords: words
-              };
+              finalPlayers[pId] = { ...p, roundScores: scores, roundWords: words };
             });
             endConundrumPhaseTimeout(roomId, finalPlayers);
           }
@@ -203,81 +226,27 @@ export const useGameState = (roomId, playerId, playerName, isMultiplayer = false
               scores[4] = 0;
               const words = [...p.roundWords];
               words[4] = "";
-              finalPlayers[pId] = {
-                ...p,
-                roundScores: scores,
-                roundWords: words
-              };
+              finalPlayers[pId] = { ...p, roundScores: scores, roundWords: words };
             });
-            return {
-              ...prev,
-              status: "game_over",
-              players: finalPlayers
-            };
+            return { ...prev, status: "game_over", players: finalPlayers };
           });
         }
       } else {
-        // Standard playing timeout
+        // Standard playing timeout — use shared evaluation helper
         if (isMultiplayer) {
           if (currentRoom.hostId === playerId) {
-            // Evaluate submissions of all players
-            const finalPlayers = { ...currentRoom.players };
-            Object.keys(finalPlayers).forEach(pId => {
-              const p = finalPlayers[pId];
-              const word = p.currentSubmission || "";
-              const isValid = validateWord(word, currentRoom.letters, dictionary);
-              const scoreGained = isValid ? calculateScore(word, currentRoom.letters, currentRoom.multipliers) : 0;
-
-              const roundIdx = currentRoom.currentRound - 1;
-              const scores = [...p.roundScores];
-              scores[roundIdx] = scoreGained;
-              
-              const words = [...p.roundWords];
-              words[roundIdx] = isValid ? word : (word ? `(${word})` : "");
-
-              finalPlayers[pId] = {
-                ...p,
-                score: p.score + scoreGained,
-                roundScores: scores,
-                roundWords: words
-              };
-            });
-            endPlayingPhase(roomId, finalPlayers);
+            endPlayingPhase(roomId, evaluateRoundSubmissions(currentRoom, dict));
           }
         } else {
-          // Local playing evaluation
-          setRoom(prev => {
-            const finalPlayers = { ...prev.players };
-            Object.keys(finalPlayers).forEach(pId => {
-              const p = finalPlayers[pId];
-              const word = p.currentSubmission || "";
-              const isValid = validateWord(word, prev.letters, dictionary);
-              const scoreGained = isValid ? calculateScore(word, prev.letters, prev.multipliers) : 0;
-
-              const roundIdx = prev.currentRound - 1;
-              const scores = [...p.roundScores];
-              scores[roundIdx] = scoreGained;
-              
-              const words = [...p.roundWords];
-              words[roundIdx] = isValid ? word : (word ? `(${word})` : "");
-
-              finalPlayers[pId] = {
-                ...p,
-                score: p.score + scoreGained,
-                roundScores: scores,
-                roundWords: words
-              };
-            });
-            return {
-              ...prev,
-              status: "round_over",
-              players: finalPlayers
-            };
-          });
+          setRoom(prev => ({
+            ...prev,
+            status: "round_over",
+            players: evaluateRoundSubmissions(prev, dict)
+          }));
         }
       }
     }
-  }, [roomId, playerId, isMultiplayer, dictionary]);
+  }, [roomId, playerId, isMultiplayer, evaluateRoundSubmissions]);
 
   // 1. Initial State Setup
   useEffect(() => {
@@ -347,10 +316,7 @@ export const useGameState = (roomId, playerId, playerName, isMultiplayer = false
           const newRoom = { ...prev, letters: newLetters };
 
           if (newLetters.length === 9) {
-            const indices = [0, 1, 2, 3, 4, 5, 6, 7, 8];
-            const idx2 = indices.splice(Math.floor(Math.random() * indices.length), 1)[0];
-            const idx3 = indices.splice(Math.floor(Math.random() * indices.length), 1)[0];
-            newRoom.multipliers = { x2: idx2, x3: idx3 };
+            newRoom.multipliers = generateMultipliers();
             newRoom.status = "playing";
             newRoom.timerStart = Date.now();
             newRoom.timerDuration = 30;
@@ -366,7 +332,9 @@ export const useGameState = (roomId, playerId, playerName, isMultiplayer = false
       const thinkTime = 5000 + Math.random() * 10000;
       
       botTimerRef.current = setTimeout(() => {
-        const botWord = getBotWord(room.letters, dictionary, botDifficulty);
+        const currentRoom = localStateRef.current;
+        if (!currentRoom || currentRoom.status !== "playing") return;
+        const botWord = getBotWord(currentRoom.letters, botDifficulty);
         
         setRoom(prev => {
           if (prev.status !== "playing") return prev;
@@ -433,7 +401,11 @@ export const useGameState = (roomId, playerId, playerName, isMultiplayer = false
       if (botTimerRef.current) clearTimeout(botTimerRef.current);
       if (botSelectionIntervalRef.current) clearInterval(botSelectionIntervalRef.current);
     };
-  }, [room, isMultiplayer, dictionary, botDifficulty]);
+    // C3 fix: depend on specific room properties, not the whole object.
+    // Bot reads current room via localStateRef to avoid stale closures.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [room?.status, room?.picker, room?.currentRound, room?.conundrumSolvedBy,
+      isMultiplayer, botDifficulty]);
 
   // 5. Player Actions
   const pickLetter = (isVowel) => {
@@ -450,10 +422,7 @@ export const useGameState = (roomId, playerId, playerName, isMultiplayer = false
         const newRoom = { ...prev, letters: newLetters };
 
         if (newLetters.length === 9) {
-          const indices = [0, 1, 2, 3, 4, 5, 6, 7, 8];
-          const idx2 = indices.splice(Math.floor(Math.random() * indices.length), 1)[0];
-          const idx3 = indices.splice(Math.floor(Math.random() * indices.length), 1)[0];
-          newRoom.multipliers = { x2: idx2, x3: idx3 };
+          newRoom.multipliers = generateMultipliers();
           newRoom.status = "playing";
           newRoom.timerStart = Date.now();
           newRoom.timerDuration = 30;
@@ -473,10 +442,7 @@ export const useGameState = (roomId, playerId, playerName, isMultiplayer = false
     selected.sort(() => Math.random() - 0.5);
     playSound("select_letter");
 
-    const indices = [0, 1, 2, 3, 4, 5, 6, 7, 8];
-    const idx2 = indices.splice(Math.floor(Math.random() * indices.length), 1)[0];
-    const idx3 = indices.splice(Math.floor(Math.random() * indices.length), 1)[0];
-    const multipliers = { x2: idx2, x3: idx3 };
+    const multipliers = generateMultipliers();
 
     if (isMultiplayer) {
       submitAllLetters(roomId, selected, multipliers);
@@ -531,7 +497,8 @@ export const useGameState = (roomId, playerId, playerName, isMultiplayer = false
       } else {
         playSound("fail");
         setErrorMessage("Incorrect conundrum guess!");
-        setTimeout(() => setErrorMessage(""), 2000);
+        if (errorTimerRef.current) clearTimeout(errorTimerRef.current);
+        errorTimerRef.current = setTimeout(() => setErrorMessage(""), 2000);
       }
     } else {
       const isValid = validateWord(clean, room.letters, dictionary);
@@ -556,7 +523,8 @@ export const useGameState = (roomId, playerId, playerName, isMultiplayer = false
       } else {
         playSound("fail");
         setErrorMessage("Word is invalid or cannot be formed!");
-        setTimeout(() => setErrorMessage(""), 2000);
+        if (errorTimerRef.current) clearTimeout(errorTimerRef.current);
+        errorTimerRef.current = setTimeout(() => setErrorMessage(""), 2000);
       }
     }
   };
@@ -630,39 +598,7 @@ export const useGameState = (roomId, playerId, playerName, isMultiplayer = false
 
   const restartLocalGame = () => {
     if (isMultiplayer) return;
-    const resetRoom = {
-      roomId,
-      status: "selecting",
-      currentRound: 1,
-      picker: playerId,
-      pickerName: playerName,
-      letters: [],
-      multipliers: { x2: -1, x3: -1 },
-      timerStart: Date.now(),
-      timerDuration: 15,
-      conundrumWord: "",
-      conundrumSolvedBy: "",
-      conundrumSolvedByName: "",
-      players: {
-        [playerId]: {
-          id: playerId,
-          name: playerName,
-          score: 0,
-          currentSubmission: "",
-          roundScores: [0, 0, 0, 0, 0],
-          roundWords: ["", "", "", "", ""]
-        },
-        "bot": {
-          id: "bot",
-          name: "Spellweaver AI",
-          score: 0,
-          currentSubmission: "",
-          roundScores: [0, 0, 0, 0, 0],
-          roundWords: ["", "", "", "", ""]
-        }
-      }
-    };
-    setRoom(resetRoom);
+    setRoom(createInitialRoom(roomId, playerId, playerName));
     setLocalWord("");
     setActiveIndices([]);
   };

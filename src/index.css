@@ -3,16 +3,11 @@
 
 @theme {
   --font-sans: 'Fredoka', system-ui, -apple-system, sans-serif;
-  --animate-float: float 4s ease-in-out infinite;
-  --animate-pulse-slow: pulse 3s cubic-bezier(0.4, 0, 0.6, 1) infinite;
   --animate-rotate-slow: rotate-slow 30s linear infinite;
   --animate-tile-flip: tile-flip 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275) forwards;
 }
 
-@keyframes float {
-  0%, 100% { transform: translateY(0); }
-  50% { transform: translateY(-6px); }
-}
+
 
 @keyframes rotate-slow {
   from { transform: rotate(0deg); }
@@ -172,15 +167,13 @@ html, body {
   box-shadow: 0 2px 0 #cccccc, 0 2px 4px rgba(0, 0, 0, 0.1);
 }
 
-/* Shaking Keyframe Animation */
-@keyframes shake {
-  0%, 100% { transform: translateX(0); }
-  15%, 45%, 75% { transform: translateX(-6px); }
-  30%, 60%, 90% { transform: translateX(6px); }
+/* Multiplier glow effects */
+.glow-red {
+  box-shadow: 0 0 6px 2px rgba(219, 39, 119, 0.5);
 }
 
-.animate-shake {
-  animation: shake 0.4s ease-in-out;
+.glow-gold {
+  box-shadow: 0 0 6px 2px rgba(245, 158, 11, 0.5);
 }
 
 #root {

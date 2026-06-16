@@ -1,6 +1,6 @@
 // Dictionary & Scoring Utilities
 
-// Curated 11-letter conundrum words (must be exactly 11 letters, common, and solvable)
+// Curated 11-letter conundrum words — pre-validated, deduplicated
 export const CONUNDRUMS = [
   "DEVELOPMENT", "INFORMATION", "CELEBRATION", "MATHEMATICS", "ENVIRONMENT",
   "TEMPERATURE", "GRANDMOTHER", "ALTERNATIVE", "APPLICATION", "INDEPENDENT",
@@ -10,18 +10,12 @@ export const CONUNDRUMS = [
   "CERTIFICATE", "INTERACTION", "MEASUREMENT", "OBSERVATION", "DESTRUCTION",
   "EXPLANATION", "IMPROVEMENT", "INSTRUCTION", "ASSOCIATION", "COMBINATION",
   "COMPETITION", "DESCRIPTION", "ADVERTISING", "ACQUISITION", "IMMEDIATELY",
-  "LEGISLATION", "METHODOLOGY", "TRANSPORTER", "WONDERFULLY", "ACCOMPLISH",
-  "ALTERNATIVE", "CONSEQUENCE", "CONTRIBUTE", "DIFFERENCES", "EXPERIENCED",
-  "GOVERNMENTAL", "ILLUSTRATED", "IMAGINATION", "IMMEDIATELY", "IMPORTANCE",
-  "INDIVIDUALS", "INFORMATION", "INHERITANCE", "INTELLIGENT", "INTERESTING",
-  "LEGISLATION", "MATHEMATICS", "NEIGHBORHOOD", "OBSERVATION", "OPPORTUNITY",
-  "PARTICIPATE", "PREPARATION", "PROBABILITY", "RECOGNITION", "RECOMMENDED",
-  "REPRESENTED", "REQUIREMENTS", "RESPONSIBLE", "SIGNIFICANT", "SPECTACULAR",
-  "STRAIGHTEN", "SUCCESSFULLY", "SUPERMARKET", "TEMPERATURE", "TRANSLATION",
-  "UNDERSTANDS", "WONDERFULLY", "REVOLUTION", "PUBLICATION", "LEGISLATION",
-  "RESERVATION", "RESTORATION", "DISTRIBUTION", "CONTRIBUTION", "COMBINATION",
-  "EXPECTATION", "APPLICATION", "PREPARATION", "CELEBRATION", "EXAMINATION"
-].map(w => w.toUpperCase()).filter(w => w.length === 11);
+  "LEGISLATION", "METHODOLOGY", "TRANSPORTER", "WONDERFULLY", "CONSEQUENCE",
+  "DIFFERENCES", "EXPERIENCED", "ILLUSTRATED", "IMAGINATION", "INDIVIDUALS",
+  "INHERITANCE", "INTELLIGENT", "INTERESTING", "OPPORTUNITY", "PARTICIPATE",
+  "PROBABILITY", "RECOGNITION", "RECOMMENDED", "REPRESENTED", "SPECTACULAR",
+  "PUBLICATION", "RESERVATION", "RESTORATION", "EXPECTATION",
+];
 
 // Scramble helper
 export const scrambleWord = (word) => {
@@ -40,6 +34,7 @@ export const scrambleWord = (word) => {
 
 // Async dictionary loader
 let cachedDictionary = null;
+let cachedDictionaryIndex = null;
 
 export const loadDictionary = async () => {
   if (cachedDictionary) return cachedDictionary;
@@ -53,7 +48,7 @@ export const loadDictionary = async () => {
     const wordsArray = text.split(/\r?\n/);
     const dictSet = new Set(wordsArray.map(w => w.trim().toUpperCase()));
     cachedDictionary = dictSet;
-    console.log(`Loaded ${dictSet.size} words into dictionary cache.`);
+    cachedDictionaryIndex = buildDictionaryIndex(dictSet);
     return dictSet;
   } catch (error) {
     console.error("Error loading dictionary:", error);
@@ -61,6 +56,24 @@ export const loadDictionary = async () => {
     return new Set();
   }
 };
+
+/**
+ * Pre-indexes dictionary words by length for fast bot lookup (C1 fix)
+ * @param {Set<string>} dictSet
+ * @returns {Object} Map of length -> word array, e.g. { 3: ["CAT",...], 4: ["DOGS",...] }
+ */
+export const buildDictionaryIndex = (dictSet) => {
+  const byLength = {};
+  for (const word of dictSet) {
+    const len = word.length;
+    if (len < 3 || len > 9) continue;
+    if (!byLength[len]) byLength[len] = [];
+    byLength[len].push(word);
+  }
+  return byLength;
+};
+
+export const getDictionaryIndex = () => cachedDictionaryIndex;
 
 /**
  * Checks if a word is valid and can be formed from the board letters
@@ -78,13 +91,13 @@ export const validateWord = (word, boardLetters, dictSet) => {
     return false;
   }
 
-  // 2. Check if the word can be made from the board letters
-  const lettersPool = [...boardLetters];
-  for (let i = 0; i < cleanWord.length; i++) {
-    const char = cleanWord[i];
-    const idx = lettersPool.indexOf(char);
-    if (idx === -1) return false; // Letter not on board or used too many times
-    lettersPool.splice(idx, 1);
+  // 2. Check if the word can be made from the board letters (count-map approach — O(n))
+  const boardCount = {};
+  for (const l of boardLetters) boardCount[l] = (boardCount[l] || 0) + 1;
+
+  for (const char of cleanWord) {
+    if (!boardCount[char] || boardCount[char] <= 0) return false;
+    boardCount[char]--;
   }
 
   return true;

@@ -28,7 +28,7 @@ export const getMuteStatus = () => {
 
 // Play synthesized sound effects
 export const playSound = (type) => {
-  if (getMuteStatus()) return;
+  if (isMuted) return;
 
   try {
     const ctx = getAudioContext();
