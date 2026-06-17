@@ -1,5 +1,6 @@
 import { initializeApp, getApp, getApps } from "firebase/app";
 import { getDatabase, ref, set, get, update, onValue, off, remove } from "firebase/database";
+import { scrambleWord } from "./dictionary.js";
 
 let app = null;
 let db = null;
@@ -247,6 +248,7 @@ export const advanceToNextRound = async (roomId, nextRound, pickerId, pickerName
   if (nextRound === 5) {
     updates.status = "playing"; // Conundrum is playing immediately
     updates.conundrumWord = conundrumWord;
+    updates.letters = scrambleWord(conundrumWord).split('');
     updates.timerStart = Date.now();
     updates.timerDuration = 45; // 45 seconds for conundrum
   } else {
